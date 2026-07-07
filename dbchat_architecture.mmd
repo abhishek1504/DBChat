@@ -1,0 +1,46 @@
+flowchart TD
+    subgraph UI["🖥️ Reception Desk — Streamlit"]
+        A[User opens app] --> B[Sidebar form:<br/>DB host, user, password, DB name,<br/>Groq API key]
+        B --> C{All inputs<br/>provided?}
+        C -- "No" --> STOP["st.stop()<br/>⛔ wait for input"]
+        C -- "Yes" --> D[Chat input box<br/>appears]
+    end
+
+    subgraph SETUP["🔧 One-time Setup (cached)"]
+        E["create_engine()<br/>📞 phone line to Postgres"]
+        F["SQLDatabase<br/>🗝️ LangChain wrapper"]
+        G["@st.cache_resource<br/>♻️ reuse connection for 2h"]
+        E --> F --> G
+    end
+
+    subgraph BRAIN["🧠 The Assistant"]
+        H["ChatGroq LLM<br/>openai/gpt-oss-20b<br/>(hosted on Groq)"]
+    end
+
+    subgraph AGENT["🤖 SQL Agent — think → act → observe loop"]
+        I["SQLDatabaseToolkit<br/>🛠️ toolbelt:<br/>list tables · describe table ·<br/>check query · run query"]
+        J["create_sql_agent<br/>(agent_type = tool-calling)"]
+        I --> J
+        H --> J
+        G --> I
+    end
+
+    subgraph DB["🏭 Warehouse — PostgreSQL"]
+        K[("Tables & rows")]
+    end
+
+    D --> L["User asks:<br/>'How many orders last month?'"]
+    L --> M["st.session_state<br/>📝 sticky notepad<br/>(chat history)"]
+    L --> J
+    J -- "SQL queries via psycopg2" --> K
+    K -- "results" --> J
+    J --> N["StreamlitCallbackHandler<br/>🔍 shows intermediate steps live"]
+    J --> O["Final answer in English"]
+    O --> M
+    M --> P["Chat messages<br/>redrawn on screen"]
+
+    style UI fill:#e8f0fe,stroke:#4285f4
+    style SETUP fill:#e6f4ea,stroke:#34a853
+    style BRAIN fill:#fef7e0,stroke:#f9ab00
+    style AGENT fill:#fce8e6,stroke:#ea4335
+    style DB fill:#f3e8fd,stroke:#a142f4
