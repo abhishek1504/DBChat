@@ -8,8 +8,15 @@ for a provider you don't use never breaks the ones you do.
 
 from typing import Optional
 
+# Groq's gpt-oss models (20b/120b) have a known, widespread tool-calling bug:
+# special "harmony" format tokens (e.g. "<|channel|>commentary") leak into
+# the tool name during function calling, breaking every tool call with
+# errors like "attempted to call tool 'x<|channel|>commentary' which was
+# not in request.tools". This affects LangChain, vLLM, and LM Studio alike
+# — it's an upstream model/template issue, not something fixable here.
+# llama-3.3-70b-versatile has solid, standard tool-calling support on Groq.
 DEFAULT_MODELS = {
-    "groq": "openai/gpt-oss-20b",
+    "groq": "llama-3.3-70b-versatile",
     "openai": "gpt-4o-mini",
     "anthropic": "claude-3-5-haiku-latest",
     "ollama": "llama3.1",

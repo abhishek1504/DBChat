@@ -121,6 +121,7 @@ The legacy Streamlit UI still works as a quick dev harness: `streamlit run app.p
 - **Raw `|` pipes during streaming** — expected; Markdown (tables) renders once the answer finalizes.
 - **Agent feels slow** — check the `[timing]` lines in the uvicorn console for true agent latency before blaming the UI.
 - **`model_decommissioned`** — providers rotate models; override the model in the sidebar's optional "Model" field, or update `DEFAULT_MODELS` in `core/llm.py`.
+- **`Tool call validation failed: ... 'x<|channel|>commentary' which was not in request.tools`** — this is a known upstream bug in Groq's `openai/gpt-oss-20b`/`gpt-oss-120b` models: special "harmony" format tokens leak into tool names during function calling (affects LangChain, vLLM, and LM Studio alike, not specific to this app). The Groq default here is `llama-3.3-70b-versatile`, which doesn't have this issue — if you've overridden the model to a gpt-oss variant in the sidebar, switch back.
 
 ## Roadmap
 
