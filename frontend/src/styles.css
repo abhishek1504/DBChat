@@ -14,6 +14,7 @@
     --err: #b3261e;
     --mono-bg: #101826;     /* ink block for the agent log */
     --mono-ink: #cfe0f1;
+    --sidebar-w: 300px;
   
     --font-display: "Space Grotesk", sans-serif;
     --font-body: "Inter", sans-serif;
@@ -32,19 +33,29 @@
     line-height: 1.55;
   }
   
-  .app { display: flex; flex-direction: column; height: 100%; }
-  
-  /* ------------------------------------------------ masthead */
-  .masthead {
+  /* ------------------------------------------------ shell: sidebar + stage
+     (Streamlit-style layout: connection form lives in a persistent left
+     rail, the main area is always the chat — no full-page swap between
+     "connect" and "chat" screens.) */
+  .shell {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    padding: 14px 22px;
-    border-bottom: 1px solid var(--line);
-    background: var(--panel);
+    height: 100%;
+    align-items: stretch;
   }
   
-  .brand {
+  .sidebar {
+    width: var(--sidebar-w);
+    flex: 0 0 auto;
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+    padding: 20px 18px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  
+  .sidebar-brand {
     font-family: var(--font-display);
     font-weight: 700;
     font-size: 20px;
@@ -53,42 +64,63 @@
   
   .brand-accent { color: var(--accent); }
   
-  .conn-badge {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    color: var(--ok);
+  .stage {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
   }
   
-  /* ------------------------------------------------ connect screen */
-  .connect-wrap {
+  /* ------------------------------------------------ status bar (centerstage) */
+  .status-bar {
+    flex: 0 0 auto;
+    padding: 12px 22px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  
+  .status-bar.is-connected { color: var(--ok); }
+  
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--ok);
+    flex: 0 0 auto;
+  }
+  
+  .stage-empty {
     flex: 1;
     display: grid;
     place-items: center;
+    color: var(--muted);
     padding: 24px;
+    text-align: center;
   }
   
-  .connect-card {
-    width: min(420px, 100%);
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 28px;
-    box-shadow: 0 1px 2px rgba(22, 32, 46, 0.05);
-  }
+  /* ------------------------------------------------ connection form (sidebar) */
+  .connect-card { display: flex; flex-direction: column; gap: 0; }
   
   .connect-card h1 {
     font-family: var(--font-display);
-    font-size: 22px;
+    font-size: 18px;
     margin: 0 0 6px;
   }
   
-  .connect-sub { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+  .connect-sub { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
   
-  .field { display: block; margin-bottom: 14px; }
+  .field { display: block; margin-bottom: 12px; }
   
   .field span {
     display: block;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--muted);
     text-transform: uppercase;
@@ -96,16 +128,19 @@
     margin-bottom: 4px;
   }
   
-  .field input {
+  .field input,
+  .field select {
     width: 100%;
-    padding: 9px 11px;
+    padding: 8px 10px;
     border: 1px solid var(--line);
     border-radius: 6px;
     font: inherit;
+    font-size: 13.5px;
     background: var(--bg);
   }
   
-  .field input:focus {
+  .field input:focus,
+  .field select:focus {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
     background: var(--panel);
@@ -113,20 +148,68 @@
   
   .connect-btn {
     width: 100%;
-    margin-top: 6px;
-    padding: 11px;
+    margin-top: 4px;
+    padding: 10px;
     border: none;
     border-radius: 6px;
     background: var(--accent);
     color: #fff;
-    font: 600 15px var(--font-body);
+    font: 600 14px var(--font-body);
     cursor: pointer;
   }
   
   .connect-btn:disabled { opacity: 0.45; cursor: default; }
   .connect-btn:not(:disabled):hover { filter: brightness(1.08); }
   
-  .connect-error { color: var(--err); font-size: 13px; }
+  .connect-error { color: var(--err); font-size: 12.5px; }
+  
+  /* ------------------------------------------------ compact connection card
+     (replaces the form in the sidebar once a session exists) */
+  .conn-compact {
+    background: var(--accent-soft);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  
+  .conn-compact-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-weight: 600;
+    color: var(--ok);
+    margin-bottom: 10px;
+  }
+  
+  .conn-compact-meta {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 3px 10px;
+    font-size: 12.5px;
+    margin: 0 0 12px;
+  }
+  
+  .conn-compact-meta dt {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  
+  .conn-compact-meta dd { margin: 0; word-break: break-word; }
+  
+  .conn-change-btn {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--ink);
+    font: 600 13px var(--font-body);
+    cursor: pointer;
+  }
+  
+  .conn-change-btn:hover { background: var(--bg); }
   
   /* ------------------------------------------------ chat */
   .chat-layout {
@@ -234,6 +317,30 @@
     max-width: 46ch;
   }
   
+  /* ------------------------------------------------ charts */
+  .chart-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-top: 12px;
+  }
+  
+  .chart-card {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 14px 4px;
+    background: var(--panel);
+  }
+  
+  .chart-title {
+    font-family: var(--font-display);
+    font-size: 13.5px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  
+  .chart-empty { color: var(--muted); font-size: 13px; padding: 12px; }
+  
   /* ------------------------------------------------ markdown answers */
   .msg-text p { margin: 0 0 8px; }
   .msg-text p:last-child { margin-bottom: 0; }
@@ -317,7 +424,15 @@
   
   .input-bar button:disabled { opacity: 0.4; cursor: default; }
   
-  @media (max-width: 540px) {
+  /* ------------------------------------------------ responsive: sidebar
+     becomes a top bar below the form's comfortable minimum width */
+  @media (max-width: 720px) {
+    .shell { flex-direction: column; }
+    .sidebar {
+      width: 100%;
+      border-right: none;
+      border-bottom: 1px solid var(--line);
+    }
     .chat-layout { padding: 0 10px; }
     .trace-input { max-width: 20ch; }
   }

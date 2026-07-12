@@ -5,7 +5,7 @@ import ChatWindow from "./components/ChatWindow.jsx";
 import ChatInput from "./components/ChatInput.jsx";
 
 export default function App() {
-  const [session, setSession] = useState(null); // { session_id, tables }
+  const [session, setSession] = useState(null); // { session_id, tables, provider, model_name }
   const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
 
@@ -30,8 +30,14 @@ export default function App() {
           (s.tables.length > 8 ? ` (${sample}, …)` : ` (${sample})`) +
           `. What would you like to know?`,
         trace: [],
+        charts: [],
       },
     ]);
+  }
+
+  function handleDisconnect() {
+    setSession(null);
+    setMessages([]);
   }
 
   async function handleSend(text) {
@@ -40,8 +46,8 @@ export default function App() {
 
     setMessages((prev) => [
       ...prev,
-      { role: "user", content: text, trace: [] },
-      { role: "assistant", content: "", trace: [], streaming: true },
+      { role: "user", content: text, trace: [], charts: [] },
+      { role: "assistant", content: "", trace: [], charts: [], streaming: true },
     ]);
 
     const updateLast = (fn) =>
@@ -85,6 +91,8 @@ export default function App() {
             }
             return { ...m, trace };
           });
+        } else if (ev.type === "chart") {
+          updateLast((m) => ({ ...m, charts: [...m.charts, ev.spec] }));
         } else if (ev.type === "token") {
           tokenBuffer.current += ev.token;
           if (!flushTimer.current) {
@@ -119,26 +127,43 @@ export default function App() {
   }
 
   return (
-    <div className="app">
-      <header className="masthead">
-        <span className="brand">
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="sidebar-brand">
           DB<span className="brand-accent">Chat</span>
-        </span>
-        {session && (
-          <span className="conn-badge" title={session.tables.join(", ")}>
-            ● connected · {session.tables.length} tables
-          </span>
-        )}
-      </header>
+        </div>
+        <ConnectionPanel
+          session={session}
+          onConnect={handleConnect}
+          onDisconnect={handleDisconnect}
+        />
+      </aside>
 
-      {!session ? (
-        <ConnectionPanel onConnect={handleConnect} />
-      ) : (
-        <main className="chat-layout">
-          <ChatWindow messages={messages} />
-          <ChatInput onSend={handleSend} disabled={busy} />
-        </main>
-      )}
+      <main className="stage">
+        <div className={`status-bar ${session ? "is-connected" : "is-idle"}`}>
+          {session ? (
+            <>
+              <span className="status-dot" />
+              connected · {session.tables.length} table
+              {session.tables.length === 1 ? "" : "s"} · {session.provider}
+              {session.model_name ? ` (${session.model_name})` : ""}
+            </>
+          ) : (
+            <>Not connected — fill in the sidebar to start a session.</>
+          )}
+        </div>
+
+        {session ? (
+          <div className="chat-layout">
+            <ChatWindow messages={messages} />
+            <ChatInput onSend={handleSend} disabled={busy} />
+          </div>
+        ) : (
+          <div className="stage-empty">
+            <p>Connect a database using the sidebar to start asking questions.</p>
+          </div>
+        )}
+      </main>
     </div>
   );
 }

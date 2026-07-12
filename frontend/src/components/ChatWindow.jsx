@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import ChartCard from "./ChartCard.jsx";
 
 function TraceLog({ trace }) {
   if (!trace.length) return null;
@@ -44,6 +45,13 @@ function Message({ msg }) {
           )}
           {msg.streaming && msg.content && <span className="caret" />}
         </div>
+        {msg.charts && msg.charts.length > 0 && (
+          <div className="chart-stack">
+            {msg.charts.map((spec, i) => (
+              <ChartCard key={i} spec={spec} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
