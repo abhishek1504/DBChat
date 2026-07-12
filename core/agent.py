@@ -87,11 +87,74 @@ def build_agent(llm, db: SQLDatabase, verbose: bool = True, include_chart_tool: 
     )
 
 
+# Extra attempts (beyond the first) for a provider-side "malformed tool
+# call" error — e.g. Groq's tool_use_failed ("Failed to call a function.
+# Please adjust your prompt."). These are usually a one-off generation
+# glitch rather than a real problem with the question, and since every
+# retried call still goes through the same read-only guard, retrying
+# costs nothing but a few seconds.
+MAX_TOOL_CALL_RETRIES = 1
+
+
+def _is_transient_tool_call_failure(exc: Exception) -> bool:
+    """Best-effort, provider-agnostic detection of a malformed-tool-call
+    error worth retrying. Checks the structured error body first (how
+    Groq's SDK — and most OpenAI-compatible ones — report this), falling
+    back to a text match so this still degrades gracefully for providers
+    that raise something else entirely."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("code") == "tool_use_failed":
+            return True
+    return "failed to call a function" in str(exc).lower()
+
+
+def _failed_generation(exc: Exception) -> Optional[str]:
+    """Pull the model's raw malformed output out of a Groq-style error
+    body, if present, so it's actually visible instead of just the
+    generic top-level message ("...See 'failed_generation' for more
+    details.") which points at data callers don't otherwise get."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            return error.get("failed_generation")
+    return None
+
+
 def ask(agent, question: str, callbacks: Optional[list] = None) -> str:
     """Run one question through the agent and return the answer text.
     Keeping this thin wrapper means the UI never needs to know about
     LangChain's invoke/run API details (which have changed before and will
-    change again e.g. when we migrate to LangGraph)"""
+    change again e.g. when we migrate to LangGraph).
 
-    result = agent.invoke({"input": question}, config={"callbacks": callbacks or []})
-    return result["output"]
+    Retries once on a transient malformed-tool-call error from the
+    provider (see MAX_TOOL_CALL_RETRIES above). If it still fails, the
+    model's raw failed generation is appended to the error when the
+    provider makes it available, instead of surfacing only the generic
+    "adjust your prompt" message.
+    """
+    last_exc: Optional[Exception] = None
+
+    for attempt in range(MAX_TOOL_CALL_RETRIES + 1):
+        try:
+            result = agent.invoke(
+                {"input": question}, config={"callbacks": callbacks or []}
+            )
+            return result["output"]
+        except Exception as exc:
+            last_exc = exc
+            if attempt < MAX_TOOL_CALL_RETRIES and _is_transient_tool_call_failure(exc):
+                continue
+            failed_generation = _failed_generation(exc)
+            if failed_generation:
+                raise RuntimeError(
+                    f"{exc} | Model's malformed tool call: {failed_generation}"
+                ) from exc
+            raise
+
+    # Unreachable — the loop above always returns or raises — but keeps
+    # type checkers happy and guards against a future refactor slipping up.
+    assert last_exc is not None
+    raise last_exc
