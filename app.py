@@ -1,55 +1,54 @@
+import os
 import streamlit as st
-from pathlib import Path
-from langchain.agents import create_sql_agent
-from langchain.sql_database import SQLDatabase
-from langchain.agents.agent_types import AgentType
-from langchain.callbacks import StreamlitCallbackHandler
-from langchain.agents.agent_toolkits import SQLDatabaseToolkit
+from dotenv import load_dotenv
+from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
+from core.agent import ask, build_agent
+from core.database import DBConfig, get_database
+from core.llm import get_llm
 
-from sqlalchemy import create_engine
-from langchain_groq import ChatGroq
+load_dotenv()
 
-st.set_page_config(page_title="LangChain: Chat with Any DB", page_icon=":robot_face:", layout="wide")
-st.title("LangChain: Chat with Any DB")
-
-POSTGRES = "USE_POSTGRES_DB"
-
-db_uri = POSTGRES
-db_host = st.sidebar.text_input("Provide DB Host")
-db_user = st.sidebar.text_input("POSTGRES User")
-db_password = st.sidebar.text_input("DB Password", type="password")
-db_db = st.sidebar.text_input("DB Name")
-
-api_key = st.sidebar.text_input(label="Groq API Key", type="password")
-
-if not db_uri:
-    st.info("Please enter the database information and uri")
-
-if not api_key:
-    st.info("Please add the groq api key")
-    st.stop()
-
-llm = ChatGroq(groq_api_key=api_key, model_name="openai/gpt-oss-120b", streaming=True)
-
-@st.cache_resource(ttl="2h")
-def configure_db(db_uri, db_host=None, db_user=None, db_password=None, db_db=None):
-    if not (db_host and db_user and db_password and db_db):
-        st.error("Please provide all DB Connection details")
-        st.stop()
-    return SQLDatabase(create_engine(f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}/{db_db}"))
-
-db = configure_db(db_uri, db_host, db_user, db_password, db_db)
-
-toolkit=SQLDatabaseToolkit(db=db, llm=llm)
-agent = create_sql_agent(
-    llm=llm,
-    toolkit=toolkit,
-    verbose=True,
-    agent_type="tool-calling",
+st.set_page_config(
+    page_title="LangChain: Chat with Any DB",
+    page_icon=":robot_face:",
+    layout="wide",
 )
 
-if "messages" not in st.session_state or st.sidebar.button("Clear message history"):
-    st.session_state["messages"]=[{"role": "assistant", "content": "How can i help you?"}] 
+st.title("LangChain: Chat with Any DB")
+
+with st.sidebar:
+    st.header("Connection")
+    db_config=DBConfig(
+        host=st.text_input("DB Host"),
+        user=st.text_input("Postgres User"),
+        password=st.text_input("DB Password", type="password"),
+        database=st.text_input("DB Name")
+    )
+    api_key=st.text_input("Groq API Key", type="password") or os.getenv("GROQ_API_KEY", "")
+    clear_history=st.button("Clear message history")
+
+if not api_key:
+    st.info("Please add the Groq API Key.")
+    st.stop()
+
+if not db_config.is_complete():
+    st.info("Please provide all DB Connection details.")
+    st.stop()
+
+def _get_agent(host:str, user:str, password:str, databse:str, key:str):
+    config = DBConfig(host=host, user=user, password=password, database=databse)
+    db=get_database(config)
+    llm=get_llm(api_key=key)
+    return build_agent(llm, db)
+
+try:
+    agent=_get_agent(db_config.host, db_config.user, db_config.password, db_config.database, api_key)
+except Exception as exc:
+    st.error(f"Could not connect: {exc}")
+    st.stop()
+
+if "messages" not in st.session_state or clear_history:
+    st.session_state.messages=[{"role": "assistant", "content": "How can I help you?"}]
 
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
@@ -60,10 +59,10 @@ if user_query:
     st.session_state.messages.append({"role": "user", "content": user_query})
     st.chat_message("user").write(user_query)
     with st.chat_message("assistant"):
-        streamlit_callback=StreamlitCallbackHandler(st.container())
-        response=agent.run(user_query, callbacks=[streamlit_callback])
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        st.write(response)
-
-
-## toolkit
+        callback=StreamlitCallbackHandler(st.container())
+        try:
+            answer=ask(agent, user_query, callbacks=[callback])
+        except Exception as exc:
+            answer=f"Sorry, something went wrong:{exc}"
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.write(answer)
