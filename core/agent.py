@@ -1,7 +1,7 @@
 from typing import Optional
 
-from langchain_community.agent_toolkits.sql.base import create_sql_agent
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
+from langchain_community.agent_toolkits.sql.base import create_sql_agent
 from langchain_community.utilities import SQLDatabase
 from langchain_core.tools import BaseTool, Tool
 
@@ -36,27 +36,41 @@ def _guard_query_tool(original: BaseTool) -> Tool:
     return Tool(name=original.name, description=original.description, func=guarded)
 
 
+class GuardedSQLDatabaseToolkit(SQLDatabaseToolkit):
+    """SQLDatabaseToolkit whose SQL-execution tool is read-only-guarded.
+
+    `create_sql_agent` doesn't accept a pre-built tool list — it only
+    takes `toolkit=` or `db=` and calls `toolkit.get_tools()` internally
+    to decide what the agent gets. So the guard has to live in an
+    overridden `get_tools()`, not in a list we hand to `create_sql_agent`
+    ourselves (that list would just be ignored).
+    """
+
+    def get_tools(self):
+        tools = super().get_tools()
+        return [
+            _guard_query_tool(t) if t.name == QUERY_TOOL_NAME else t
+            for t in tools
+        ]
+
+
 def build_agent(llm, db: SQLDatabase, verbose: bool = True, include_chart_tool: bool = True):
     """Assemble the SQL agent from its parts.
 
     Every SQL-executing tool is read-only-guarded before the agent is
-    assembled — see core/sql_guard.py. Pair this with a least-privilege,
-    SELECT-only DB user (see README) for defense in depth: the guard stops
-    the agent from *attempting* writes, the DB user stops it from
-    *succeeding* even if the guard were ever bypassed.
+    assembled — see core/sql_guard.py and GuardedSQLDatabaseToolkit above.
+    Pair this with a least-privilege, SELECT-only DB user (see README) for
+    defense in depth: the guard stops the agent from *attempting* writes,
+    the DB user stops it from *succeeding* even if the guard were ever
+    bypassed.
     """
-    toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-    tools = [
-        _guard_query_tool(t) if t.name == QUERY_TOOL_NAME else t
-        for t in toolkit.get_tools()
-    ]
-
-    if include_chart_tool:
-        tools.append(make_chart_tool(db))
+    toolkit = GuardedSQLDatabaseToolkit(db=db, llm=llm)
+    extra_tools = [make_chart_tool(db)] if include_chart_tool else []
 
     return create_sql_agent(
         llm=llm,
-        tools=tools,
+        toolkit=toolkit,
+        extra_tools=extra_tools,
         verbose=verbose,
         agent_type="tool-calling",
     )
