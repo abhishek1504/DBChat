@@ -33,7 +33,18 @@ def _guard_query_tool(original: BaseTool) -> Tool:
             return f"Query rejected: {exc}"
         return original.run(query)
 
-    return Tool(name=original.name, description=original.description, func=guarded)
+    # Reuse the original tool's args_schema (a pydantic model with a
+    # `query: str` field). Without this, a bare Tool(func=...) falls back
+    # to a generic single-string schema keyed "__arg1" instead of "query"
+    # — the LLM keeps calling with "query" (matching the description and
+    # its training on the standard SQL toolkit schema), the schema expects
+    # "__arg1", and every call fails validation before guarded() ever runs.
+    return Tool(
+        name=original.name,
+        description=original.description,
+        func=guarded,
+        args_schema=original.args_schema,
+    )
 
 
 class GuardedSQLDatabaseToolkit(SQLDatabaseToolkit):
