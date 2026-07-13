@@ -13,6 +13,7 @@ from core.charts import make_chart_tool
 from core.sql_guard import UnsafeQueryError, assert_select_only
 
 QUERY_TOOL_NAME = "sql_db_query"
+SCHEMA_TOOL_NAME = "sql_db_schema"
 DEFAULT_THREAD_ID = "default"
 
 # A weaker/faster model (e.g. llama-3.1-8b-instant) is more prone to
@@ -151,6 +152,36 @@ def _guard_query_tool(original: BaseTool) -> Tool:
     )
 
 
+def _helpful_schema_tool(original: BaseTool, db: SQLDatabase) -> Tool:
+    """Return a version of sql_db_schema whose "table not found" error
+    also lists the real table names, instead of only saying which guess
+    was wrong.
+
+    Weaker/local models have shown they don't reliably connect an earlier
+    sql_db_list_tables call to a later sql_db_schema guess — the default
+    error ("table_names {'employees'} not found in database") leaves the
+    model to remember and cross-reference that earlier tool result on its
+    own, which is exactly the step it's been observed to skip. Putting
+    the actual table list directly in *this* error message removes the
+    need for that cross-reference — the correct information is right
+    there in the one observation the model is currently looking at.
+    """
+
+    def helpful(table_names: str) -> str:
+        result = original.run(table_names)
+        if isinstance(result, str) and "not found in database" in result:
+            available = ", ".join(db.get_usable_table_names())
+            result += f"\n\nThe actual tables in this database are: {available}"
+        return result
+
+    return Tool(
+        name=original.name,
+        description=original.description,
+        func=helpful,
+        args_schema=original.args_schema,
+    )
+
+
 class GuardedSQLDatabaseToolkit(SQLDatabaseToolkit):
     """SQLDatabaseToolkit whose SQL-execution tool is read-only-guarded.
 
@@ -164,10 +195,15 @@ class GuardedSQLDatabaseToolkit(SQLDatabaseToolkit):
 
     def get_tools(self):
         tools = super().get_tools()
-        return [
-            _guard_query_tool(t) if t.name == QUERY_TOOL_NAME else t
-            for t in tools
-        ]
+        result = []
+        for t in tools:
+            if t.name == QUERY_TOOL_NAME:
+                result.append(_guard_query_tool(t))
+            elif t.name == SCHEMA_TOOL_NAME:
+                result.append(_helpful_schema_tool(t, self.db))
+            else:
+                result.append(t)
+        return result
 
 
 def build_agent(llm, db: SQLDatabase, verbose: bool = True, include_chart_tool: bool = True):
