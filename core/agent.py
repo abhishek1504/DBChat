@@ -2,6 +2,7 @@ from typing import Optional
 
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_community.agent_toolkits.sql.base import create_sql_agent
+from langchain_community.agent_toolkits.sql.prompt import SQL_PREFIX
 from langchain_community.utilities import SQLDatabase
 from langchain_core.tools import BaseTool, Tool
 
@@ -9,6 +10,23 @@ from core.charts import make_chart_tool
 from core.sql_guard import UnsafeQueryError, assert_select_only
 
 QUERY_TOOL_NAME = "sql_db_query"
+
+# The default SQL_PREFIX tells the model not to SELECT * and to return
+# "the answer" — it says nothing about *how* to present rows, so the
+# model tends to narrate results in prose instead of a table, especially
+# for wide tables (it'll happily describe 30 columns in a paragraph
+# rather than lay them out). The frontend already renders Markdown
+# tables (react-markdown + remark-gfm), so all that's missing is telling
+# the model to actually produce one.
+_TABLE_FORMAT_INSTRUCTIONS = """
+When your final answer includes more than one row (or more than a couple
+of columns), format it as a GitHub-flavored Markdown table instead of
+describing the rows and columns in prose. Select only the columns
+relevant to the question — a few well-chosen columns in a readable table
+beats every column in the row.
+"""
+
+AGENT_PREFIX = SQL_PREFIX + "\n" + _TABLE_FORMAT_INSTRUCTIONS
 
 
 def _guard_query_tool(original: BaseTool) -> Tool:
@@ -84,6 +102,7 @@ def build_agent(llm, db: SQLDatabase, verbose: bool = True, include_chart_tool: 
         extra_tools=extra_tools,
         verbose=verbose,
         agent_type="tool-calling",
+        prefix=AGENT_PREFIX,
     )
 
 
