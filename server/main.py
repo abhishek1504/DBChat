@@ -21,7 +21,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import BaseModel
 
-from core.agent import build_agent
+from core.agent import ask, build_agent
 from core.database import DBConfig, get_database
 from core.llm import get_llm
 
@@ -140,7 +140,13 @@ class QueueCallbackHandler(BaseCallbackHandler):
 
     def on_tool_end(self, output, *, run_id=None, **kwargs):
         name = self._tool_names.pop(str(run_id), "tool") if run_id is not None else "tool"
-        text_output = str(output)
+        # Since the LangGraph migration, tool output arrives wrapped in a
+        # ToolMessage (str(ToolMessage(...)) is a Python repr like
+        # "content='...' name='...' tool_call_id='...'", not the raw
+        # string) — unwrap .content when present so this still works the
+        # same as it did with the old AgentExecutor, which passed the raw
+        # string straight through.
+        text_output = str(getattr(output, "content", output))
 
         if name == "plot_chart":
             try:
@@ -177,10 +183,15 @@ def chat(req: ChatRequest):
 
     def run_agent():
         try:
-            result = agent.invoke(
-                {"input": req.message}, config={"callbacks": [handler]}
+            # thread_id=session_id is what gives this conversation
+            # memory across turns (LangGraph's MemorySaver, attached in
+            # build_agent) — same session id the frontend already holds,
+            # no new plumbing needed. ask() also carries the transient
+            # tool-call retry/diagnostics from core/agent.py.
+            answer = ask(
+                agent, req.message, callbacks=[handler], thread_id=req.session_id
             )
-            q.put({"type": "final", "answer": result["output"]})
+            q.put({"type": "final", "answer": answer})
         except Exception as exc:  # surfaced to the client as an event
             q.put({"type": "error", "message": str(exc)})
         finally:

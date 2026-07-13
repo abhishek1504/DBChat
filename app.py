@@ -35,7 +35,14 @@ if not db_config.is_complete():
     st.info("Please provide all DB Connection details.")
     st.stop()
 
+@st.cache_resource(show_spinner=False)
 def _get_agent(host:str, user:str, password:str, databse:str, key:str):
+    # Without caching, Streamlit rebuilds the agent (and its LangGraph
+    # MemorySaver) on every single rerun — i.e. on every message — which
+    # would silently throw conversation memory away each time. Caching by
+    # these arguments means the same agent (and checkpointer) survives
+    # across reruns for the same connection, so follow-up questions
+    # actually get the memory the LangGraph migration added.
     config = DBConfig(host=host, user=user, password=password, database=databse)
     db=get_database(config)
     llm=get_llm(api_key=key)

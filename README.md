@@ -1,6 +1,6 @@
 # DBChat — Chat with Your Database
 
-Ask your database questions in plain English. A LangChain SQL agent inspects the schema, writes and runs read-only SQL, and streams its reasoning and answer back live — including a transaction-log view of every tool the agent used, and inline charts when you ask for one.
+Ask your database questions in plain English. A LangGraph agent (LangChain tools underneath) inspects the schema, writes and runs read-only SQL, and streams its reasoning and answer back live — including a transaction-log view of every tool the agent used, inline charts when you ask for one, and now actual conversation memory for follow-up questions.
 
 Originally built as a single Streamlit script, DBChat is now a proper two-tier app: a **FastAPI backend** around a UI-agnostic core, and a **React frontend**.
 
@@ -9,8 +9,9 @@ Originally built as a single Streamlit script, DBChat is now a proper two-tier a
 ```
 React (Vite, :5173)  ──HTTP/NDJSON stream──►  FastAPI (:8000)  ──►  core/  ──►  PostgreSQL / MySQL
                                                                       │
-                                                                 LangChain SQL agent
-                                                                 (Groq · OpenAI · Anthropic · Ollama)
+                                                          LangGraph agent (create_react_agent)
+                                                          + MemorySaver checkpointer, per session
+                                                          (Groq · OpenAI · Anthropic · Ollama)
 ```
 
 ```
@@ -20,7 +21,7 @@ DBChat/
 │   ├── database.py           #   DBConfig + SQLDatabase factory
 │   ├── sql_guard.py          #   read-only SQL enforcement (SELECT/WITH-only, single statement)
 │   ├── charts.py             #   plot_chart tool — guarded SELECT -> chart JSON
-│   └── agent.py              #   agent assembly (guarded query tool + chart tool) + ask()
+│   └── agent.py              #   LangGraph agent assembly (guarded query tool + chart tool + memory) + ask()
 ├── server/
 │   └── main.py               # FastAPI: /api/connect, /api/chat (streaming, incl. chart events)
 ├── frontend/
@@ -66,6 +67,10 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO dbchat_reade
 ## Multi-LLM support
 
 `core/llm.py` is a small provider registry — `get_llm(provider=..., api_key=..., model_name=..., base_url=...)` builds a Groq, OpenAI, Anthropic, or local Ollama chat model behind the same interface. Ollama needs no API key; point `base_url` at your local (or remote) Ollama server (defaults to `http://localhost:11434`). Pick the provider per-connection from the sidebar.
+
+## Conversation memory
+
+`core/agent.py` builds the agent on LangGraph's `create_react_agent` instead of the legacy `AgentExecutor`, with a `MemorySaver` checkpointer attached per session. `ask()` takes a `thread_id` (the FastAPI session id) that selects which conversation history a question continues — so "and what about last month?" now actually has something to refer back to, instead of every question starting from a blank slate. Different sessions (different `thread_id`s) stay fully isolated. The legacy Streamlit app (`app.py`) now caches the built agent with `st.cache_resource` so its memory survives Streamlit's per-interaction rerun instead of getting rebuilt (and forgotten) on every message.
 
 ## Answer formatting
 
@@ -135,7 +140,7 @@ The legacy Streamlit UI still works as a quick dev harness: `streamlit run app.p
 3. ~~Read-only safety guard (least-privilege DB user, SELECT-only enforcement)~~ ✅
 4. ~~Multi-LLM support (OpenAI, Anthropic, Ollama) via `core/llm.py`~~ ✅
 5. ~~Charts and visual reporting~~ ✅
-6. Conversation memory (follow-up questions) — LangGraph migration
+6. ~~Conversation memory (follow-up questions) — LangGraph migration~~ ✅
 7. Multi-database dialects (MySQL, SQLite) via `core/database.py` — MySQL URI already templated, needs end-to-end testing
 8. RAG over schema docs / few-shot NL→SQL examples
 

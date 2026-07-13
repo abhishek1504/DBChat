@@ -1,15 +1,17 @@
 from typing import Optional
 
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
-from langchain_community.agent_toolkits.sql.base import create_sql_agent
 from langchain_community.agent_toolkits.sql.prompt import SQL_PREFIX
 from langchain_community.utilities import SQLDatabase
 from langchain_core.tools import BaseTool, Tool
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import create_react_agent
 
 from core.charts import make_chart_tool
 from core.sql_guard import UnsafeQueryError, assert_select_only
 
 QUERY_TOOL_NAME = "sql_db_query"
+DEFAULT_THREAD_ID = "default"
 
 # The default SQL_PREFIX tells the model not to SELECT * and to return
 # "the answer" — it says nothing about *how* to present rows, so the
@@ -39,7 +41,13 @@ Do not add a paragraph enumerating every other field on the row; if the
 user wants more columns they will ask for them by name.
 """
 
-AGENT_PREFIX = SQL_PREFIX + "\n" + _TABLE_FORMAT_INSTRUCTIONS
+# {dialect} / {top_k} placeholders are filled in by build_agent() below —
+# create_sql_agent used to do this substitution for us; create_react_agent
+# has no notion of a SQL toolkit at all, so it's on us now.
+AGENT_PREFIX_TEMPLATE = SQL_PREFIX + "\n" + _TABLE_FORMAT_INSTRUCTIONS
+
+# Kept as an alias for anything importing the pre-migration name.
+AGENT_PREFIX = AGENT_PREFIX_TEMPLATE
 
 
 def _guard_query_tool(original: BaseTool) -> Tool:
@@ -81,11 +89,12 @@ def _guard_query_tool(original: BaseTool) -> Tool:
 class GuardedSQLDatabaseToolkit(SQLDatabaseToolkit):
     """SQLDatabaseToolkit whose SQL-execution tool is read-only-guarded.
 
-    `create_sql_agent` doesn't accept a pre-built tool list — it only
-    takes `toolkit=` or `db=` and calls `toolkit.get_tools()` internally
-    to decide what the agent gets. So the guard has to live in an
-    overridden `get_tools()`, not in a list we hand to `create_sql_agent`
-    ourselves (that list would just be ignored).
+    Unlike `create_sql_agent` (which only accepted `toolkit=`/`db=` and
+    called `.get_tools()` internally), `create_react_agent` just takes a
+    plain `tools=` list — so this subclass is no longer load-bearing the
+    way it was pre-migration, but it's kept as-is since `.get_tools()` is
+    still the one place the guard has to be applied before tools are
+    handed to *any* agent constructor.
     """
 
     def get_tools(self):
@@ -99,6 +108,14 @@ class GuardedSQLDatabaseToolkit(SQLDatabaseToolkit):
 def build_agent(llm, db: SQLDatabase, verbose: bool = True, include_chart_tool: bool = True):
     """Assemble the SQL agent from its parts.
 
+    Built on LangGraph's `create_react_agent` (a compiled StateGraph)
+    rather than the legacy `AgentExecutor` — see `ask()` below for what
+    that changes call-site-wise. A fresh `MemorySaver` checkpointer is
+    attached per agent (i.e. per session, since `server/main.py` calls
+    this once per `/api/connect`), which is what gives conversational
+    memory: follow-up questions in the same session now see prior turns,
+    keyed by `thread_id` (server/main.py uses the session_id).
+
     Every SQL-executing tool is read-only-guarded before the agent is
     assembled — see core/sql_guard.py and GuardedSQLDatabaseToolkit above.
     Pair this with a least-privilege, SELECT-only DB user (see README) for
@@ -107,15 +124,19 @@ def build_agent(llm, db: SQLDatabase, verbose: bool = True, include_chart_tool: 
     bypassed.
     """
     toolkit = GuardedSQLDatabaseToolkit(db=db, llm=llm)
-    extra_tools = [make_chart_tool(db)] if include_chart_tool else []
+    tools = toolkit.get_tools()
+    if include_chart_tool:
+        tools.append(make_chart_tool(db))
 
-    return create_sql_agent(
-        llm=llm,
-        toolkit=toolkit,
-        extra_tools=extra_tools,
-        verbose=verbose,
-        agent_type="tool-calling",
-        prefix=AGENT_PREFIX,
+    prompt = AGENT_PREFIX_TEMPLATE.format(dialect=db.dialect, top_k=10)
+    checkpointer = MemorySaver()
+
+    return create_react_agent(
+        llm,
+        tools,
+        prompt=prompt,
+        checkpointer=checkpointer,
+        debug=verbose,
     )
 
 
@@ -155,11 +176,23 @@ def _failed_generation(exc: Exception) -> Optional[str]:
     return None
 
 
-def ask(agent, question: str, callbacks: Optional[list] = None) -> str:
+def ask(
+    agent,
+    question: str,
+    callbacks: Optional[list] = None,
+    thread_id: str = DEFAULT_THREAD_ID,
+) -> str:
     """Run one question through the agent and return the answer text.
-    Keeping this thin wrapper means the UI never needs to know about
-    LangChain's invoke/run API details (which have changed before and will
-    change again e.g. when we migrate to LangGraph).
+
+    Keeping this thin wrapper means the UI never needs to know about the
+    underlying framework's invoke API — which is exactly why this
+    survived the LangGraph migration unchanged in shape: callers still
+    just call `ask(agent, question)`. What changed underneath:
+      - input is now `{"messages": [...]}` instead of `{"input": ...}`,
+        and the answer comes from the last message instead of ["output"].
+      - `thread_id` selects which conversation history (if any) this
+        question continues — pass the session id to get real multi-turn
+        memory; omit it and every call is independent, as before.
 
     Retries once on a transient malformed-tool-call error from the
     provider (see MAX_TOOL_CALL_RETRIES above). If it still fails, the
@@ -168,13 +201,15 @@ def ask(agent, question: str, callbacks: Optional[list] = None) -> str:
     "adjust your prompt" message.
     """
     last_exc: Optional[Exception] = None
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": callbacks or [],
+    }
 
     for attempt in range(MAX_TOOL_CALL_RETRIES + 1):
         try:
-            result = agent.invoke(
-                {"input": question}, config={"callbacks": callbacks or []}
-            )
-            return result["output"]
+            result = agent.invoke({"messages": [("user", question)]}, config=config)
+            return result["messages"][-1].content
         except Exception as exc:
             last_exc = exc
             if attempt < MAX_TOOL_CALL_RETRIES and _is_transient_tool_call_failure(exc):
