@@ -67,6 +67,10 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO dbchat_reade
 
 `core/llm.py` is a small provider registry — `get_llm(provider=..., api_key=..., model_name=..., base_url=...)` builds a Groq, OpenAI, Anthropic, or local Ollama chat model behind the same interface. Ollama needs no API key; point `base_url` at your local (or remote) Ollama server (defaults to `http://localhost:11434`). Pick the provider per-connection from the sidebar.
 
+## Answer formatting
+
+`core/agent.py` extends the default SQL agent prompt (`AGENT_PREFIX`) with an explicit instruction to render multi-row or multi-column results as a Markdown table rather than describing them in prose — the default prompt only says "don't `SELECT *`" and "return the answer," which left the model free to narrate wide result sets in a paragraph instead of a table. The frontend already renders Markdown tables (`react-markdown` + `remark-gfm`), so this was a prompt gap, not a rendering one.
+
 ## Prerequisites
 
 - Python 3.9+ (3.11 recommended)
