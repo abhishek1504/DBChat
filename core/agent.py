@@ -5,6 +5,7 @@ from langchain_community.agent_toolkits.sql.prompt import SQL_PREFIX
 from langchain_community.utilities import SQLDatabase
 from langchain_core.tools import BaseTool, Tool
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 
 from core.charts import make_chart_tool
@@ -12,6 +13,15 @@ from core.sql_guard import UnsafeQueryError, assert_select_only
 
 QUERY_TOOL_NAME = "sql_db_query"
 DEFAULT_THREAD_ID = "default"
+
+# A weaker/faster model (e.g. llama-3.1-8b-instant) is more prone to
+# looping — repeatedly calling tools without ever settling on a final
+# answer, especially against a demanding prompt like ours (read-only
+# guard rejections, strict table formatting). LangGraph's own default is
+# 25 steps; we cut that down so a genuinely stuck model fails in ~10 real
+# round-trips instead of ~25, since every step here is a live API call,
+# not a free local retry.
+DEFAULT_RECURSION_LIMIT = 12
 
 # The default SQL_PREFIX tells the model not to SELECT * and to return
 # "the answer" — it says nothing about *how* to present rows, so the
@@ -181,6 +191,7 @@ def ask(
     question: str,
     callbacks: Optional[list] = None,
     thread_id: str = DEFAULT_THREAD_ID,
+    recursion_limit: int = DEFAULT_RECURSION_LIMIT,
 ) -> str:
     """Run one question through the agent and return the answer text.
 
@@ -204,12 +215,29 @@ def ask(
     config = {
         "configurable": {"thread_id": thread_id},
         "callbacks": callbacks or [],
+        "recursion_limit": recursion_limit,
     }
 
     for attempt in range(MAX_TOOL_CALL_RETRIES + 1):
         try:
             result = agent.invoke({"messages": [("user", question)]}, config=config)
             return result["messages"][-1].content
+        except GraphRecursionError as exc:
+            # In practice create_react_agent's own "remaining steps"
+            # tracking (only active when recursion_limit is explicitly
+            # set, which is why we always set it above) catches this
+            # first and returns a plain "Sorry, need more steps..." final
+            # message instead of ever raising — so this branch is a
+            # defensive fallback, not the common path. Not retried: the
+            # model spent its whole step budget calling tools without
+            # producing a plain answer, which another identical attempt
+            # is very unlikely to fix.
+            raise RuntimeError(
+                f"The agent made {recursion_limit} tool calls without reaching a "
+                "final answer. This usually means the model is struggling with "
+                "this question or the database schema — try a stronger model, "
+                "or rephrase the question to be more specific."
+            ) from exc
         except Exception as exc:
             last_exc = exc
             if attempt < MAX_TOOL_CALL_RETRIES and _is_transient_tool_call_failure(exc):
