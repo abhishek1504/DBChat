@@ -61,6 +61,30 @@ def _trim_history(state):
 # worked example gives it a much harder edge to follow. The frontend
 # already renders Markdown tables (react-markdown + remark-gfm), so this
 # is purely about what the model produces, not how it's rendered.
+# The base SQL_PREFIX says "create a syntactically correct query" but
+# never says *how to find out* what's queryable — it assumes the model
+# will naturally check the schema first. Smaller/local models often skip
+# straight to guessing table and column names from the question's
+# wording instead (e.g. assuming "employees"/"employer_id" exist because
+# the question mentions "employees" and "employer"), only discovering the
+# real schema after a query fails. Weaker models are also noticeably less
+# reliable at that *recovery* step — the corrective tool call sometimes
+# comes out as plain text instead of a real tool invocation, which ends
+# the turn with garbled text instead of an actual schema lookup. Making
+# discovery mandatory up front avoids needing that harder recovery path
+# in the first place.
+_SCHEMA_DISCOVERY_INSTRUCTIONS = """
+Before writing any SQL query, you MUST first call sql_db_list_tables to
+see what tables actually exist, then sql_db_schema for the specific
+table(s) relevant to the question. Never guess table or column names
+from how the question is worded — table and column names in this
+database may not match the words the user used (for example, a question
+about "employees" does not guarantee a table literally named
+"employees", or that it uses columns named "employee_id"/"employer_id").
+Only write the query after you have confirmed the real table and column
+names from these tools.
+"""
+
 _TABLE_FORMAT_INSTRUCTIONS = """
 When your final answer includes more than one row, you MUST present it as
 a GitHub-flavored Markdown table — never as a paragraph describing the
@@ -83,7 +107,9 @@ user wants more columns they will ask for them by name.
 # {dialect} / {top_k} placeholders are filled in by build_agent() below —
 # create_sql_agent used to do this substitution for us; create_react_agent
 # has no notion of a SQL toolkit at all, so it's on us now.
-AGENT_PREFIX_TEMPLATE = SQL_PREFIX + "\n" + _TABLE_FORMAT_INSTRUCTIONS
+AGENT_PREFIX_TEMPLATE = (
+    SQL_PREFIX + "\n" + _SCHEMA_DISCOVERY_INSTRUCTIONS + "\n" + _TABLE_FORMAT_INSTRUCTIONS
+)
 
 # Kept as an alias for anything importing the pre-migration name.
 AGENT_PREFIX = AGENT_PREFIX_TEMPLATE
