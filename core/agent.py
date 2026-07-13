@@ -15,15 +15,28 @@ QUERY_TOOL_NAME = "sql_db_query"
 # "the answer" — it says nothing about *how* to present rows, so the
 # model tends to narrate results in prose instead of a table, especially
 # for wide tables (it'll happily describe 30 columns in a paragraph
-# rather than lay them out). The frontend already renders Markdown
-# tables (react-markdown + remark-gfm), so all that's missing is telling
-# the model to actually produce one.
+# rather than lay them out). A soft "format nicely" instruction wasn't
+# concrete enough to reliably override that; a hard column cap plus a
+# worked example gives it a much harder edge to follow. The frontend
+# already renders Markdown tables (react-markdown + remark-gfm), so this
+# is purely about what the model produces, not how it's rendered.
 _TABLE_FORMAT_INSTRUCTIONS = """
-When your final answer includes more than one row (or more than a couple
-of columns), format it as a GitHub-flavored Markdown table instead of
-describing the rows and columns in prose. Select only the columns
-relevant to the question — a few well-chosen columns in a readable table
-beats every column in the row.
+When your final answer includes more than one row, you MUST present it as
+a GitHub-flavored Markdown table — never as a paragraph describing the
+columns. Pick at most 5 columns: an identifying column (name and/or id)
+plus only the columns the question is actually about. Never include every
+column from the table just because the query returned them — write a
+narrower SELECT instead.
+
+Example — question: "list active employees for employer 123"
+
+| employee_id | name       | status |
+|-------------|------------|--------|
+| 501         | Jane Doe   | active |
+| 502         | John Smith | active |
+
+Do not add a paragraph enumerating every other field on the row; if the
+user wants more columns they will ask for them by name.
 """
 
 AGENT_PREFIX = SQL_PREFIX + "\n" + _TABLE_FORMAT_INSTRUCTIONS
