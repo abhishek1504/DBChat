@@ -21,7 +21,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import BaseModel
 
-from core.agent import build_agent
+from core.agent import ask, build_agent
 from core.database import DBConfig, get_database
 from core.llm import get_llm
 
@@ -47,7 +47,10 @@ class ConnectRequest(BaseModel):
     user: str
     password: str
     database: str
-    groq_api_key: str
+    provider: str = "groq"          # "groq" | "openai" | "anthropic" | "ollama"
+    api_key: str = ""               # ignored for provider="ollama"
+    model_name: Optional[str] = None
+    base_url: Optional[str] = None  # ollama only, e.g. http://localhost:11434
 
 
 class ChatRequest(BaseModel):
@@ -69,7 +72,10 @@ def connect(req: ConnectRequest):
         password=req.password.strip(),
         database=req.database.strip(),
     )
-    api_key = req.groq_api_key.strip()
+    provider = req.provider.strip().lower()
+    api_key = req.api_key.strip()
+    model_name = req.model_name.strip() if req.model_name else None
+    base_url = req.base_url.strip() if req.base_url else None
 
     try:
         db = get_database(config)
@@ -78,18 +84,34 @@ def connect(req: ConnectRequest):
         raise HTTPException(status_code=400, detail=f"Database connection failed: {exc}")
 
     try:
-        llm = get_llm(api_key=api_key)
-        # Constructing ChatGroq never contacts Groq — a bad key would only
-        # surface later, mid-chat, as a confusing 401. This one-token ping
-        # validates the key NOW so the user gets the error on this screen.
+        llm = get_llm(
+            api_key=api_key,
+            provider=provider,
+            model_name=model_name,
+            base_url=base_url,
+        )
+        # Constructing the chat model never contacts the provider — a bad
+        # key (or unreachable Ollama server) would only surface later, mid-
+        # chat, as a confusing error. This one-token ping validates it NOW
+        # so the user gets the error on this screen.
         llm.invoke("ping")
         agent = build_agent(llm, db, verbose=False)
     except Exception as exc:
         raise HTTPException(status_code=401, detail=f"LLM setup failed: {exc}")
 
     session_id = str(uuid.uuid4())
-    SESSIONS[session_id] = {"agent": agent, "tables": tables}
-    return {"session_id": session_id, "tables": tables}
+    SESSIONS[session_id] = {
+        "agent": agent,
+        "tables": tables,
+        "provider": provider,
+        "model_name": model_name or "",
+    }
+    return {
+        "session_id": session_id,
+        "tables": tables,
+        "provider": provider,
+        "model_name": model_name or "",
+    }
 
 
 # ------------------------------------------------------- event streaming
@@ -99,22 +121,50 @@ class QueueCallbackHandler(BaseCallbackHandler):
     The agent runs synchronously in a worker thread; the HTTP response
     generator drains the queue and streams each event as one NDJSON line.
     This is the plain-Python equivalent of StreamlitCallbackHandler.
+
+    Tool names aren't passed to on_tool_end by LangChain's callback API,
+    so we track name-by-run_id from on_tool_start — that's what lets us
+    tell a plot_chart result apart from a regular sql_db_query result and
+    emit a dedicated "chart" event for it.
     """
 
     def __init__(self, q: "queue.Queue[Optional[dict]]"):
         self.q = q
+        self._tool_names: Dict[str, str] = {}
 
-    def on_tool_start(self, serialized, input_str, **kwargs):
-        self.q.put(
-            {
-                "type": "tool_start",
-                "tool": (serialized or {}).get("name", "tool"),
-                "input": str(input_str)[:400],
-            }
-        )
+    def on_tool_start(self, serialized, input_str, *, run_id=None, **kwargs):
+        name = (serialized or {}).get("name", "tool")
+        if run_id is not None:
+            self._tool_names[str(run_id)] = name
+        self.q.put({"type": "tool_start", "tool": name, "input": str(input_str)[:400]})
 
-    def on_tool_end(self, output, **kwargs):
-        self.q.put({"type": "tool_end", "output": str(output)[:400]})
+    def on_tool_end(self, output, *, run_id=None, **kwargs):
+        name = self._tool_names.pop(str(run_id), "tool") if run_id is not None else "tool"
+        # Since the LangGraph migration, tool output arrives wrapped in a
+        # ToolMessage (str(ToolMessage(...)) is a Python repr like
+        # "content='...' name='...' tool_call_id='...'", not the raw
+        # string) — unwrap .content when present so this still works the
+        # same as it did with the old AgentExecutor, which passed the raw
+        # string straight through.
+        text_output = str(getattr(output, "content", output))
+
+        if name == "plot_chart":
+            try:
+                spec = json.loads(text_output)
+            except (TypeError, ValueError):
+                spec = None
+            if isinstance(spec, dict) and spec.get("type") == "chart":
+                self.q.put({"type": "chart", "spec": spec})
+                self.q.put(
+                    {
+                        "type": "tool_end",
+                        "output": f"chart ready: {spec.get('chart_type')} of "
+                        f"{spec.get('y')} by {spec.get('x')}",
+                    }
+                )
+                return
+
+        self.q.put({"type": "tool_end", "output": text_output[:400]})
 
     def on_llm_new_token(self, token, **kwargs):
         if token:
@@ -133,10 +183,15 @@ def chat(req: ChatRequest):
 
     def run_agent():
         try:
-            result = agent.invoke(
-                {"input": req.message}, config={"callbacks": [handler]}
+            # thread_id=session_id is what gives this conversation
+            # memory across turns (LangGraph's MemorySaver, attached in
+            # build_agent) — same session id the frontend already holds,
+            # no new plumbing needed. ask() also carries the transient
+            # tool-call retry/diagnostics from core/agent.py.
+            answer = ask(
+                agent, req.message, callbacks=[handler], thread_id=req.session_id
             )
-            q.put({"type": "final", "answer": result["output"]})
+            q.put({"type": "final", "answer": answer})
         except Exception as exc:  # surfaced to the client as an event
             q.put({"type": "error", "message": str(exc)})
         finally:
