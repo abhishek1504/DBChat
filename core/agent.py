@@ -68,22 +68,36 @@ def _trim_history(state):
 # straight to guessing table and column names from the question's
 # wording instead (e.g. assuming "employees"/"employer_id" exist because
 # the question mentions "employees" and "employer"), only discovering the
-# real schema after a query fails. Weaker models are also noticeably less
-# reliable at that *recovery* step — the corrective tool call sometimes
-# comes out as plain text instead of a real tool invocation, which ends
-# the turn with garbled text instead of an actual schema lookup. Making
-# discovery mandatory up front avoids needing that harder recovery path
-# in the first place.
+# real schema after a query fails.
+#
+# Two earlier mitigations (mandate discovery in the prompt; make the
+# sql_db_schema error self-contained with the real table list) weren't
+# enough in practice — a weak local model has been observed to skip
+# calling sql_db_list_tables entirely, and to repeat the exact same wrong
+# table-name guess even after being told the real names in a prior tool
+# result. Both of those fixes still depended on the model correctly
+# orchestrating a multi-step tool sequence, which is precisely what it's
+# unreliable at. So the table list itself is baked directly into the
+# prompt below (via {table_names}, filled in by build_agent() from
+# db.get_usable_table_names()) — removing the need for a tool call, and
+# therefore a chance to skip or misuse it, for that first step entirely.
+# Column-level discovery (sql_db_schema) still has to happen via a real
+# tool call, since dumping every table's full column list into the
+# prompt for a large schema would be expensive and could overwhelm a
+# small model's context on its own.
 _SCHEMA_DISCOVERY_INSTRUCTIONS = """
-Before writing any SQL query, you MUST first call sql_db_list_tables to
-see what tables actually exist, then sql_db_schema for the specific
-table(s) relevant to the question. Never guess table or column names
-from how the question is worded — table and column names in this
-database may not match the words the user used (for example, a question
-about "employees" does not guarantee a table literally named
-"employees", or that it uses columns named "employee_id"/"employer_id").
-Only write the query after you have confirmed the real table and column
-names from these tools.
+The tables that exist in this database are exactly these — do not use
+any table name that isn't in this list, and do not assume a table exists
+just because the question's wording suggests one:
+
+{table_names}
+
+Before writing any SQL query, you MUST call sql_db_schema for the
+specific table(s) (from the list above) relevant to the question, to
+learn the real column names — never guess column names either (for
+example, a question about "employees" does not guarantee columns named
+"employee_id"/"employer_id"). Only write the query after sql_db_schema
+has confirmed the real column names for the tables you intend to use.
 """
 
 _TABLE_FORMAT_INSTRUCTIONS = """
@@ -206,6 +220,25 @@ class GuardedSQLDatabaseToolkit(SQLDatabaseToolkit):
         return result
 
 
+# A safety cap on how many table names get listed directly in the
+# prompt — most schemas are nowhere near this, but a database with an
+# unusually large number of tables shouldn't be allowed to blow up
+# prompt size (and therefore token cost) on every single turn.
+MAX_TABLE_NAMES_IN_PROMPT = 150
+
+
+def _format_table_names(db: SQLDatabase) -> str:
+    names = db.get_usable_table_names()
+    if len(names) > MAX_TABLE_NAMES_IN_PROMPT:
+        shown = names[:MAX_TABLE_NAMES_IN_PROMPT]
+        return (
+            ", ".join(shown)
+            + f", ... ({len(names) - MAX_TABLE_NAMES_IN_PROMPT} more not shown — "
+            "call sql_db_list_tables for the complete list)"
+        )
+    return ", ".join(names)
+
+
 def build_agent(llm, db: SQLDatabase, verbose: bool = True, include_chart_tool: bool = True):
     """Assemble the SQL agent from its parts.
 
@@ -229,7 +262,9 @@ def build_agent(llm, db: SQLDatabase, verbose: bool = True, include_chart_tool: 
     if include_chart_tool:
         tools.append(make_chart_tool(db))
 
-    prompt = AGENT_PREFIX_TEMPLATE.format(dialect=db.dialect, top_k=10)
+    prompt = AGENT_PREFIX_TEMPLATE.format(
+        dialect=db.dialect, top_k=10, table_names=_format_table_names(db)
+    )
     checkpointer = MemorySaver()
 
     return create_react_agent(
