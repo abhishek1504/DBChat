@@ -3,6 +3,7 @@ from typing import Optional
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_community.agent_toolkits.sql.prompt import SQL_PREFIX
 from langchain_community.utilities import SQLDatabase
+from langchain_core.messages import trim_messages
 from langchain_core.tools import BaseTool, Tool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphRecursionError
@@ -22,6 +23,34 @@ DEFAULT_THREAD_ID = "default"
 # round-trips instead of ~25, since every step here is a live API call,
 # not a free local retry.
 DEFAULT_RECURSION_LIMIT = 12
+
+# How many recent messages (not tokens) to actually send the model each
+# turn. MemorySaver keeps the FULL conversation in the checkpoint forever
+# — this only bounds what gets sent to the LLM per call, since without it
+# every turn re-sends the entire growing history, including large tool
+# outputs (full SQL result sets, chart data), so token cost per turn only
+# ever goes up over a session's life instead of staying roughly constant.
+MAX_HISTORY_MESSAGES = 12
+
+
+def _trim_history(state):
+    """pre_model_hook for create_react_agent: cap what's sent to the LLM
+    to the last MAX_HISTORY_MESSAGES messages, without touching what's
+    persisted in the checkpointer. token_counter=len treats each message
+    as one unit rather than counting real tokens (real token counting is
+    provider/tokenizer-specific; message-count is a simple, provider
+    agnostic proxy that's good enough here). strategy="last" + start_on=
+    "human" keeps tool-call/ToolMessage pairs intact — it drops a whole
+    incomplete turn rather than splitting a tool call from its result,
+    which would otherwise produce an invalid message list."""
+    trimmed = trim_messages(
+        state["messages"],
+        token_counter=len,
+        max_tokens=MAX_HISTORY_MESSAGES,
+        strategy="last",
+        start_on="human",
+    )
+    return {"llm_input_messages": trimmed}
 
 # The default SQL_PREFIX tells the model not to SELECT * and to return
 # "the answer" — it says nothing about *how* to present rows, so the
@@ -146,6 +175,7 @@ def build_agent(llm, db: SQLDatabase, verbose: bool = True, include_chart_tool: 
         tools,
         prompt=prompt,
         checkpointer=checkpointer,
+        pre_model_hook=_trim_history,
         debug=verbose,
     )
 

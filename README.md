@@ -72,6 +72,10 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO dbchat_reade
 
 `core/agent.py` builds the agent on LangGraph's `create_react_agent` instead of the legacy `AgentExecutor`, with a `MemorySaver` checkpointer attached per session. `ask()` takes a `thread_id` (the FastAPI session id) that selects which conversation history a question continues — so "and what about last month?" now actually has something to refer back to, instead of every question starting from a blank slate. Different sessions (different `thread_id`s) stay fully isolated. The legacy Streamlit app (`app.py`) now caches the built agent with `st.cache_resource` so its memory survives Streamlit's per-interaction rerun instead of getting rebuilt (and forgotten) on every message.
 
+## Token cost of memory
+
+Conversation memory (above) has a real cost: without any bound, every turn re-sends the *entire* accumulated history to the model, including past tool outputs (full SQL result sets, chart data) — token cost per turn only grows over a session's life. `build_agent()` passes a `pre_model_hook` (`_trim_history` in `core/agent.py`) that caps what's actually sent to the LLM each turn to the last `MAX_HISTORY_MESSAGES` (12) messages, while the full history still persists untouched in the checkpointer. This is a message-count cap, not a real token count (provider-specific tokenizers vary), so it's an approximation — good enough to keep per-turn cost roughly flat instead of growing unboundedly, not a hard token guarantee.
+
 ## Answer formatting
 
 `core/agent.py` extends the default SQL agent prompt (`AGENT_PREFIX`) with an explicit instruction to render multi-row or multi-column results as a Markdown table rather than describing them in prose — the default prompt only says "don't `SELECT *`" and "return the answer," which left the model free to narrate wide result sets in a paragraph instead of a table. The frontend already renders Markdown tables (`react-markdown` + `remark-gfm`), so this was a prompt gap, not a rendering one.
